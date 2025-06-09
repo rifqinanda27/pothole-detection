@@ -1,84 +1,218 @@
-#importing necessary libraries
+import sys
 import cv2 as cv
 import time
-import geocoder
 import os
+import geocoder
+from PyQt5.QtWidgets import (
+    QApplication, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
+    QFileDialog, QComboBox, QMessageBox
+)
+from PyQt5.QtGui import QImage, QPixmap
+from PyQt5.QtCore import QTimer, Qt
 
-#reading label name from obj.names file
-class_name = []
-with open(os.path.join("project_files",'obj.names'), 'r') as f:
-    class_name = [cname.strip() for cname in f.readlines()]
+class PotholeDetector(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Pothole Detection")
+        self.setGeometry(100, 100, 960, 720)
 
-#importing model weights and config file
-#defining the model parameters
-net1 = cv.dnn.readNet('project_files/yolov4_tiny.weights', 'project_files/yolov4_tiny.cfg')
-net1.setPreferableBackend(cv.dnn.DNN_BACKEND_CUDA)
-net1.setPreferableTarget(cv.dnn.DNN_TARGET_CUDA_FP16)
-model1 = cv.dnn_DetectionModel(net1)
-model1.setInputParams(size=(640, 480), scale=1/255, swapRB=True)
+        # Folder hasil
+        self.result_path = "pothole_coordinates"
+        if not os.path.exists(self.result_path):
+            os.makedirs(self.result_path)
 
-#defining the video source (0 for camera or file name for video)
-cap = cv.VideoCapture("test.mp4") 
-width  = cap.get(3)
-height = cap.get(4)
-result = cv.VideoWriter('result.avi', 
-                         cv.VideoWriter_fourcc(*'MJPG'),
-                         10,(int(width),int(height)))
+        # Label video
+        self.video_label = QLabel(self)
+        self.video_label.setFixedSize(900, 600)
+        self.video_label.setStyleSheet("background-color: black;")
 
-#defining parameters for result saving and get coordinates
-#defining initial values for some parameters in the script
-g = geocoder.ip('me')
-result_path = "pothole_coordinates"
-starting_time = time.time()
-Conf_threshold = 0.5
-NMS_threshold = 0.4
-frame_counter = 0
-i = 0
-b = 0
+        # Dropdown untuk camera device
+        self.cam_selector = QComboBox()
+        self.cam_selector.addItem("Select camera")
+        self.detecting = False
 
-#detection loop
-while True:
-    ret, frame = cap.read()
-    frame_counter += 1
-    if ret == False:
-        break
-    #analysis the stream with detection model
-    classes, scores, boxes = model1.detect(frame, Conf_threshold, NMS_threshold)
-    for (classid, score, box) in zip(classes, scores, boxes):
-        label = "pothole"
-        x, y, w, h = box
-        recarea = w*h
-        area = width*height
-        #drawing detection boxes on frame for detected potholes and saving coordinates txt and photo
-        if(len(scores)!=0 and scores[0]>=0.7):
-            if((recarea/area)<=0.1 and box[1]<600):
-                cv.rectangle(frame, (x, y), (x + w, y + h), (0,255,0), 1)
-                cv.putText(frame, "%" + str(round(scores[0]*100,2)) + " " + label, (box[0], box[1]-10),cv.FONT_HERSHEY_COMPLEX, 0.5, (255,0,0), 1)
-                if(i==0):
-                    cv.imwrite(os.path.join(result_path,'pothole'+str(i)+'.jpg'), frame)
-                    with open(os.path.join(result_path,'pothole'+str(i)+'.txt'), 'w') as f:
-                        f.write(str(g.latlng))
-                        i=i+1
-                if(i!=0):
-                    if((time.time()-b)>=2):
-                        cv.imwrite(os.path.join(result_path,'pothole'+str(i)+'.jpg'), frame)
-                        with open(os.path.join(result_path,'pothole'+str(i)+'.txt'), 'w') as f:
-                            f.write(str(g.latlng))
-                            b = time.time()
-                            i = i+1
-    #writing fps on frame
-    endingTime = time.time() - starting_time
-    fps = frame_counter/endingTime
-    cv.putText(frame, f'FPS: {fps}', (20, 50),
-               cv.FONT_HERSHEY_COMPLEX, 0.7, (0, 255, 0), 2)
-    #showing and saving result
-    cv.imshow('frame', frame)
-    result.write(frame)
-    key = cv.waitKey(1)
-    if key == ord('q'):
-        break
-    
-#end
-cap.release()
-result.release()
-cv.destroyAllWindows()
+        # Tombol
+        self.btn_open_video = QPushButton("Open Video")
+        self.btn_start_cam = QPushButton("Start Camera")
+        self.btn_stop = QPushButton("Stop")
+
+        # Layout
+        h_layout = QHBoxLayout()
+        h_layout.addWidget(self.cam_selector)
+        h_layout.addWidget(self.btn_start_cam)
+        h_layout.addWidget(self.btn_open_video)
+        h_layout.addWidget(self.btn_stop)
+
+        v_layout = QVBoxLayout()
+        v_layout.addWidget(self.video_label)
+        v_layout.addLayout(h_layout)
+        self.setLayout(v_layout)
+
+        # Timer untuk loop frame
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.update_frame)
+
+        # Variables
+        self.cap = None
+        self.frame_counter = 0
+        self.starting_time = None
+        self.i = 0
+        self.b = 0
+        self.location = ["Unknown", "Unknown"]
+
+        # Load YOLO model
+        self.net = cv.dnn.readNet('project_files/yolov4_tiny.weights', 'project_files/yolov4_tiny.cfg')
+        self.model = cv.dnn_DetectionModel(self.net)
+        self.model.setInputParams(size=(640, 480), scale=1/255, swapRB=True)
+
+        # Gunakan CPU saja (OpenCV default)
+        self.net.setPreferableBackend(cv.dnn.DNN_BACKEND_OPENCV)
+        self.net.setPreferableTarget(cv.dnn.DNN_TARGET_CPU)
+        print("Using CPU backend")
+
+
+        # Bind buttons
+        self.btn_open_video.clicked.connect(self.open_video)
+        self.btn_start_cam.clicked.connect(self.start_camera)
+        self.btn_stop.clicked.connect(self.stop_detection)
+
+        # Cari kamera yang tersedia
+        self.enumerate_cameras()
+
+        # Coba dapatkan lokasi
+        try:
+            g = geocoder.ip('me')
+            if g.latlng:
+                self.location = g.latlng
+        except:
+            pass
+
+    def enumerate_cameras(self):
+        # Scan camera index 0-5
+        self.cam_selector.clear()
+        self.cam_selector.addItem("Select camera")
+        for i in range(6):
+            cap = cv.VideoCapture(i)
+            if cap.isOpened():
+                self.cam_selector.addItem(f"Camera {i}", i)
+                cap.release()
+
+    def open_video(self):
+        if self.detecting:
+            QMessageBox.warning(self, "Warning", "Stop current detection first.")
+            return
+        filename, _ = QFileDialog.getOpenFileName(self, "Open Video", "", "Video Files (*.mp4 *.avi)")
+        if filename:
+            self.cap = cv.VideoCapture(filename)
+            if not self.cap.isOpened():
+                QMessageBox.critical(self, "Error", "Cannot open video file!")
+                return
+            self.start_detection()
+
+    def start_camera(self):
+        if self.detecting:
+            QMessageBox.warning(self, "Warning", "Stop current detection first.")
+            return
+        index = self.cam_selector.currentData()
+        if index is None:
+            QMessageBox.warning(self, "Warning", "Please select a camera!")
+            return
+        self.cap = cv.VideoCapture(index)
+        if not self.cap.isOpened():
+            QMessageBox.critical(self, "Error", "Cannot open selected camera!")
+            return
+        self.start_detection()
+
+    def start_detection(self):
+        self.frame_counter = 0
+        self.starting_time = time.time()
+        self.i = 0
+        self.b = 0
+
+        # Setup video writer
+        width = int(self.cap.get(cv.CAP_PROP_FRAME_WIDTH))
+        height = int(self.cap.get(cv.CAP_PROP_FRAME_HEIGHT))
+        fps = self.cap.get(cv.CAP_PROP_FPS)
+        if fps == 0:
+            fps = 25
+        self.width, self.height = width, height
+        self.result = cv.VideoWriter('result.avi',
+                                    cv.VideoWriter_fourcc(*'MJPG'),
+                                    fps,
+                                    (width, height))
+        self.detecting = True
+        self.timer.start(30)
+
+    def stop_detection(self):
+        if not self.detecting:
+            return
+        self.timer.stop()
+        self.detecting = False
+        if self.cap:
+            self.cap.release()
+        if hasattr(self, 'result') and self.result.isOpened():
+            self.result.release()
+        QMessageBox.information(self, "Stopped", "Detection stopped, results saved.")
+
+    def update_frame(self):
+        ret, frame = self.cap.read()
+        if not ret:
+            self.stop_detection()
+            return
+
+        self.frame_counter += 1
+
+        # Detection
+        Conf_threshold = 0.5
+        NMS_threshold = 0.4
+
+        classes, scores, boxes = self.model.detect(frame, Conf_threshold, NMS_threshold)
+
+        for (classid, score, box) in zip(classes, scores, boxes):
+            label = "pothole"
+            x, y, w, h = box
+            recarea = w * h
+            area = self.width * self.height
+
+            if len(scores) != 0 and scores[0] >= 0.7:
+                if (recarea / area) <= 0.1 and y < 600:
+                    cv.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 1)
+                    cv.putText(frame, "%" + str(round(scores[0] * 100, 2)) + " " + label,
+                               (x, y - 10), cv.FONT_HERSHEY_COMPLEX, 0.5, (255, 0, 0), 1)
+
+                    # Save image and coordinates every 2 seconds
+                    if self.i == 0:
+                        cv.imwrite(os.path.join(self.result_path, f'pothole{self.i}.jpg'), frame)
+                        with open(os.path.join(self.result_path, f'pothole{self.i}.txt'), 'w') as f:
+                            f.write(str(self.location))
+                        self.i += 1
+                        self.b = time.time()
+                    elif time.time() - self.b >= 2:
+                        cv.imwrite(os.path.join(self.result_path, f'pothole{self.i}.jpg'), frame)
+                        with open(os.path.join(self.result_path, f'pothole{self.i}.txt'), 'w') as f:
+                            f.write(str(self.location))
+                        self.b = time.time()
+                        self.i += 1
+
+        # Show FPS
+        ending_time = time.time() - self.starting_time
+        fps = self.frame_counter / ending_time
+        cv.putText(frame, f'FPS: {fps:.2f}', (20, 50),
+                   cv.FONT_HERSHEY_COMPLEX, 0.7, (0, 255, 0), 2)
+
+        # Show in QLabel
+        rgb_image = cv.cvtColor(frame, cv.COLOR_BGR2RGB)
+        h, w, ch = rgb_image.shape
+        bytes_per_line = ch * w
+        convert_to_Qt_format = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format_RGB888)
+        p = convert_to_Qt_format.scaled(self.video_label.width(), self.video_label.height(), Qt.KeepAspectRatio)
+        self.video_label.setPixmap(QPixmap.fromImage(p))
+
+        # Save video
+        self.result.write(frame)
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    window = PotholeDetector()
+    window.show()
+    sys.exit(app.exec_())
