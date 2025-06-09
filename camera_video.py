@@ -70,7 +70,6 @@ class PotholeDetector(QWidget):
         self.net.setPreferableTarget(cv.dnn.DNN_TARGET_CPU)
         print("Using CPU backend")
 
-
         # Bind buttons
         self.btn_open_video.clicked.connect(self.open_video)
         self.btn_start_cam.clicked.connect(self.start_camera)
@@ -129,19 +128,34 @@ class PotholeDetector(QWidget):
         self.i = 0
         self.b = 0
 
-        # Setup video writer
         width = int(self.cap.get(cv.CAP_PROP_FRAME_WIDTH))
         height = int(self.cap.get(cv.CAP_PROP_FRAME_HEIGHT))
-        fps = self.cap.get(cv.CAP_PROP_FPS)
-        if fps == 0:
-            fps = 25
         self.width, self.height = width, height
-        self.result = cv.VideoWriter('result.avi',
-                                    cv.VideoWriter_fourcc(*'MJPG'),
-                                    fps,
-                                    (width, height))
+
+        fps = self.cap.get(cv.CAP_PROP_FPS)
+        if fps == 0 or fps is None or fps != fps:  # cek NaN juga
+            fps = 25  # default fallback
+
+        print(f"Camera FPS: {fps}")
+
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        output_filename = os.path.join(self.result_path, f"output_{timestamp}.avi")
+
+        self.result = cv.VideoWriter(
+            output_filename,
+            cv.VideoWriter_fourcc(*'MJPG'),
+            fps,
+            (width, height)
+        )
+
+        if not self.result.isOpened():
+            QMessageBox.critical(self, "Error", "❌ Failed to open video writer.")
+            return
+
         self.detecting = True
-        self.timer.start(30)
+        # Timer interval = 1000ms / fps, pakai integer biar gak error
+        self.timer.start(int(1000 / fps))
+
 
     def stop_detection(self):
         if not self.detecting:
@@ -162,7 +176,7 @@ class PotholeDetector(QWidget):
 
         self.frame_counter += 1
 
-        # Detection
+        # Detection thresholds
         Conf_threshold = 0.5
         NMS_threshold = 0.4
 
@@ -194,9 +208,9 @@ class PotholeDetector(QWidget):
                         self.b = time.time()
                         self.i += 1
 
-        # Show FPS
+        # Show FPS on frame
         ending_time = time.time() - self.starting_time
-        fps = self.frame_counter / ending_time
+        fps = self.frame_counter / ending_time if ending_time > 0 else 0
         cv.putText(frame, f'FPS: {fps:.2f}', (20, 50),
                    cv.FONT_HERSHEY_COMPLEX, 0.7, (0, 255, 0), 2)
 
@@ -208,8 +222,9 @@ class PotholeDetector(QWidget):
         p = convert_to_Qt_format.scaled(self.video_label.width(), self.video_label.height(), Qt.KeepAspectRatio)
         self.video_label.setPixmap(QPixmap.fromImage(p))
 
-        # Save video
+        # Save video frame
         self.result.write(frame)
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
