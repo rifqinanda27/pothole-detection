@@ -3,6 +3,7 @@ import cv2 as cv
 import time
 import os
 import geocoder
+import requests
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
     QFileDialog, QComboBox, QMessageBox
@@ -79,12 +80,17 @@ class PotholeDetector(QWidget):
         self.enumerate_cameras()
 
         # Coba dapatkan lokasi
+        # try:
+        #     g = geocoder.ip('me')
+        #     if g.latlng:
+        #         self.location = g.latlng
+        # except:
+        #     pass
         try:
-            g = geocoder.ip('me')
-            if g.latlng:
-                self.location = g.latlng
+            res = requests.get("http://ip-api.com/json/").json()
+            self.location = [res['lat'], res['lon']]
         except:
-            pass
+            self.location = ["Unknown", "Unknown"]
 
     def enumerate_cameras(self):
         # Scan camera index 0-5
