@@ -2,7 +2,7 @@ import sys
 import cv2 as cv
 import time
 import os
-import geocoder
+# import geocoder
 import requests
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
